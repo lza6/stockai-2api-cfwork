@@ -122,16 +122,39 @@ async function handleChatCompletions(request, requestId) {
     const body = await request.json();
     const model = body.model || CONFIG.DEFAULT_MODEL;
     const messages = body.messages || [];
-    const stream = body.stream !== false; // 默认为 true，除非显式设为 false
+    // const stream = body.stream !== false; // 默认为 true，除非显式设为 false
+    const stream = body.stream === true;  // 修正：默认为 false (符合 OpenAI 标准)，只有显式为 true 才开启流
     const isWebUI = body.is_web_ui === true;
 
+    // // 1. 转换消息格式 (OpenAI -> StockAI)
+    // // StockAI 格式: { parts: [{type: "text", text: "..."}], role: "user", id: "..." }
+    // const convertedMessages = messages.map(msg => ({
+    //   parts: [{ type: "text", text: msg.content }],
+    //   id: generateRandomId(16),
+    //   role: msg.role
+    // }));
+
     // 1. 转换消息格式 (OpenAI -> StockAI)
-    // StockAI 格式: { parts: [{type: "text", text: "..."}], role: "user", id: "..." }
-    const convertedMessages = messages.map(msg => ({
-      parts: [{ type: "text", text: msg.content }],
-      id: generateRandomId(16),
-      role: msg.role
-    }));
+    const convertedMessages = messages.map(msg => {
+      let contentStr = "";
+      
+      // 检测 content 是字符串还是数组
+      if (typeof msg.content === 'string') {
+        contentStr = msg.content;
+      } else if (Array.isArray(msg.content)) {
+        // 如果是数组，提取所有 type="text" 的内容并拼接
+        contentStr = msg.content
+          .filter(part => part.type === 'text')
+          .map(part => part.text)
+          .join('\n');
+      }
+
+      return {
+        parts: [{ type: "text", text: contentStr }],
+        id: generateRandomId(16),
+        role: msg.role
+      };
+    });
 
     // 2. 构造上游 Payload
     const payload = {
