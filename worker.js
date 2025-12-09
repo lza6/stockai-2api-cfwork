@@ -194,6 +194,7 @@ async function handleChatCompletions(request, requestId) {
 }
 
 // 处理流式响应 (SSE -> SSE)
+// [修复版] 移除缓冲区，恢复极速流式响应，避免超时或卡顿
 function handleStreamResponse(upstreamResponse, model, requestId, isWebUI) {
   const { readable, writable } = new TransformStream();
   const writer = writable.getWriter();
@@ -201,6 +202,22 @@ function handleStreamResponse(upstreamResponse, model, requestId, isWebUI) {
   const decoder = new TextDecoder();
 
   (async () => {
+    // 辅助函数：发送 SSE 数据块
+    const sendChunk = async (content, finishReason = null) => {
+      const chunk = {
+        id: requestId,
+        object: "chat.completion.chunk",
+        created: Math.floor(Date.now() / 1000),
+        model: model,
+        choices: [{ 
+            index: 0, 
+            delta: content ? { content: content } : {}, 
+            finish_reason: finishReason 
+        }]
+      };
+      await writer.write(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
+    };
+
     try {
       const reader = upstreamResponse.body.getReader();
       let buffer = "";
@@ -221,20 +238,13 @@ function handleStreamResponse(upstreamResponse, model, requestId, isWebUI) {
             try {
               const data = JSON.parse(dataStr);
               
-              // StockAI 的 delta 在 data.delta 中，且类型为 text-delta
-              if (data.type === 'text-delta' && data.delta) {
-                const chunk = {
-                  id: requestId,
-                  object: "chat.completion.chunk",
-                  created: Math.floor(Date.now() / 1000),
-                  model: model,
-                  choices: [{ index: 0, delta: { content: data.delta }, finish_reason: null }]
-                };
-                await writer.write(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
-              }
-              // 处理结束
-              else if (data.type === 'finish') {
-                 // Do nothing, wait for loop end or explicit stop
+              // 核心逻辑：收到什么发什么，不积压，确保速度
+              if (data.type === 'text-delta' && typeof data.delta === 'string') {
+                // 简单的过滤尝试：如果单个碎片完全就是广告开头，则屏蔽（几率较小，但无副作用）
+                if (data.delta.includes("本服务由 [web.stockai.trade]")) {
+                    continue; 
+                }
+                await sendChunk(data.delta);
               }
             } catch (e) { }
           }
@@ -242,32 +252,23 @@ function handleStreamResponse(upstreamResponse, model, requestId, isWebUI) {
       }
 
       // 发送结束标记
-      const endChunk = {
-        id: requestId,
-        object: "chat.completion.chunk",
-        created: Math.floor(Date.now() / 1000),
-        model: model,
-        choices: [{ index: 0, delta: {}, finish_reason: "stop" }]
-      };
-      await writer.write(encoder.encode(`data: ${JSON.stringify(endChunk)}\n\n`));
+      await sendChunk(null, "stop");
       await writer.write(encoder.encode('data: [DONE]\n\n'));
 
     } catch (e) {
-      const errChunk = {
-        id: requestId,
-        object: "chat.completion.chunk",
-        created: Math.floor(Date.now() / 1000),
-        model: model,
-        choices: [{ index: 0, delta: { content: `\n\n[Error: ${e.message}]` }, finish_reason: "error" }]
-      };
-      await writer.write(encoder.encode(`data: ${JSON.stringify(errChunk)}\n\n`));
+      // 发生错误时通知客户端
+      await sendChunk(`\n\n[System Error: ${e.message}]`, "error");
     } finally {
       await writer.close();
     }
   })();
 
   return new Response(readable, {
-    headers: corsHeaders({ 'Content-Type': 'text/event-stream' })
+    headers: corsHeaders({ 
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive'
+    })
   });
 }
 
@@ -305,6 +306,11 @@ async function handleNonStreamResponse(upstreamResponse, model, requestId) {
     throw new Error(`Stream buffering failed: ${e.message}`);
   }
 
+  // --- [新增代码] 去除广告 ---
+  // 正则匹配：匹配以换行符开头，包含 "本服务由 [web.stockai.trade]" 的内容直到结尾
+  fullText = fullText.replace(/\n+本服务由 \[web\.stockai\.trade\].*$/s, "");
+  // -------------------------
+  
   const response = {
     id: requestId,
     object: "chat.completion",
