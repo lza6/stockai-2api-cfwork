@@ -338,7 +338,6 @@ function handleCorsPreflight() {
 // --- [第四部分: 开发者驾驶舱 UI] ---
 function handleUI(request) {
   const origin = new URL(request.url).origin;
-  const apiKey = request.ctx.apiKey;
   
   const html = `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -355,6 +354,10 @@ function handleUI(request) {
       .box { background: #252525; padding: 12px; border-radius: 6px; border: 1px solid var(--border); margin-bottom: 15px; }
       .label { font-size: 12px; color: #888; margin-bottom: 5px; display: block; }
       .code-block { font-family: monospace; font-size: 12px; color: var(--primary); word-break: break-all; background: #111; padding: 8px; border-radius: 4px; cursor: pointer; }
+      .code-block.secret { cursor: default; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+      .code-actions { display: flex; gap: 6px; }
+      .ghost-btn { background: #1f1f1f; color: #ddd; border: 1px solid #333; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; }
+      .ghost-btn:hover { border-color: var(--primary); color: var(--primary); }
       
       input, select, textarea { width: 100%; background: #333; border: 1px solid #444; color: #fff; padding: 8px; border-radius: 4px; margin-bottom: 10px; box-sizing: border-box; }
       button { width: 100%; padding: 10px; background: var(--primary); border: none; border-radius: 4px; font-weight: bold; cursor: pointer; color: #000; }
@@ -375,8 +378,9 @@ function handleUI(request) {
         <h2 style="margin-top:0">🚀 ${CONFIG.PROJECT_NAME} <span style="font-size:12px;color:#888">v${CONFIG.PROJECT_VERSION}</span></h2>
         
         <div class="box">
-            <span class="label">API 密钥 (点击复制)</span>
-            <div class="code-block" onclick="copy('${apiKey}')">${apiKey}</div>
+            <span class="label">API 密钥</span>
+            <input id="api-key" type="password" placeholder="请输入 API 密钥" autocomplete="off" value="" />
+            <div style="font-size:11px;color:#888;margin-top:6px;">出于安全考虑，密钥不会在页面显示或自动填充。</div>
         </div>
 
         <div class="box">
@@ -423,7 +427,6 @@ function handleUI(request) {
     </main>
 
     <script>
-        const API_KEY = "${apiKey}";
         const ENDPOINT = "${origin}/v1/chat/completions";
         
         function log(msg) {
@@ -453,8 +456,10 @@ function handleUI(request) {
             const prompt = document.getElementById('prompt').value.trim();
             const model = document.getElementById('model').value;
             const stream = document.getElementById('stream').checked;
-            
+            const apiKeyInput = document.getElementById('api-key').value.trim();
+
             if (!prompt) return alert('请输入提示词');
+            if (!apiKeyInput) return alert('请先输入 API 密钥');
 
             const btn = document.getElementById('btn-gen');
             btn.disabled = true;
@@ -473,9 +478,9 @@ function handleUI(request) {
             try {
                 const res = await fetch(ENDPOINT, {
                     method: 'POST',
-                    headers: { 
-                        'Authorization': 'Bearer ' + API_KEY, 
-                        'Content-Type': 'application/json' 
+                    headers: {
+                        'Authorization': 'Bearer ' + apiKeyInput,
+                        'Content-Type': 'application/json'
                     },
                     body: JSON.stringify({
                         model: model,
