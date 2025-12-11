@@ -1,0 +1,6 @@
+name = "stockai-2api-cfwork"
+main = "worker.js"
+compatibility_date = "2024-12-11"
+
+[observability]
+enabled = true

@@ -56,6 +56,8 @@
 
 ### 🔧 手动部署教程
 
+仓库已内置 `wrangler.toml`（入口 `worker.js`，兼容日期 `2024-12-11`），在本地或 CI 环境下可直接执行 `npx wrangler deploy` 完成发布，无需额外参数。
+
 <details>
 <summary><strong>📋 点击展开详细步骤</strong></summary>
 

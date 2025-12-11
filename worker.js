@@ -355,6 +355,10 @@ function handleUI(request) {
       .box { background: #252525; padding: 12px; border-radius: 6px; border: 1px solid var(--border); margin-bottom: 15px; }
       .label { font-size: 12px; color: #888; margin-bottom: 5px; display: block; }
       .code-block { font-family: monospace; font-size: 12px; color: var(--primary); word-break: break-all; background: #111; padding: 8px; border-radius: 4px; cursor: pointer; }
+      .code-block.secret { cursor: default; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+      .code-actions { display: flex; gap: 6px; }
+      .ghost-btn { background: #1f1f1f; color: #ddd; border: 1px solid #333; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; }
+      .ghost-btn:hover { border-color: var(--primary); color: var(--primary); }
       
       input, select, textarea { width: 100%; background: #333; border: 1px solid #444; color: #fff; padding: 8px; border-radius: 4px; margin-bottom: 10px; box-sizing: border-box; }
       button { width: 100%; padding: 10px; background: var(--primary); border: none; border-radius: 4px; font-weight: bold; cursor: pointer; color: #000; }
@@ -375,8 +379,15 @@ function handleUI(request) {
         <h2 style="margin-top:0">🚀 ${CONFIG.PROJECT_NAME} <span style="font-size:12px;color:#888">v${CONFIG.PROJECT_VERSION}</span></h2>
         
         <div class="box">
-            <span class="label">API 密钥 (点击复制)</span>
-            <div class="code-block" onclick="copy('${apiKey}')">${apiKey}</div>
+            <span class="label">API 密钥</span>
+            <div class="code-block secret">
+              <span id="api-key-mask">${'•'.repeat(apiKey.length)}</span>
+              <div class="code-actions">
+                <button class="ghost-btn" id="toggle-key" onclick="toggleKey()">显示</button>
+                <button class="ghost-btn" onclick="copyKey()">复制</button>
+              </div>
+            </div>
+            <div style="font-size:11px;color:#888;margin-top:6px;">默认隐藏，点击“显示”后查看完整密钥。</div>
         </div>
 
         <div class="box">
@@ -425,6 +436,7 @@ function handleUI(request) {
     <script>
         const API_KEY = "${apiKey}";
         const ENDPOINT = "${origin}/v1/chat/completions";
+        let keyVisible = false;
         
         function log(msg) {
             const el = document.getElementById('logs');
@@ -438,6 +450,23 @@ function handleUI(request) {
         function copy(text) {
             navigator.clipboard.writeText(text);
             log('已复制到剪贴板');
+        }
+
+        function copyKey() {
+            copy(API_KEY);
+        }
+
+        function toggleKey() {
+            const el = document.getElementById('api-key-mask');
+            const btn = document.getElementById('toggle-key');
+            if (keyVisible) {
+                el.innerText = '•'.repeat(API_KEY.length);
+                btn.innerText = '显示';
+            } else {
+                el.innerText = API_KEY;
+                btn.innerText = '隐藏';
+            }
+            keyVisible = !keyVisible;
         }
 
         function appendMsg(role, text) {
