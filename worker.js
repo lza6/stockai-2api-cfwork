@@ -122,16 +122,39 @@ async function handleChatCompletions(request, requestId) {
     const body = await request.json();
     const model = body.model || CONFIG.DEFAULT_MODEL;
     const messages = body.messages || [];
-    const stream = body.stream !== false; // 默认为 true，除非显式设为 false
+    // const stream = body.stream !== false; // 默认为 true，除非显式设为 false
+    const stream = body.stream === true;  // 修正：默认为 false (符合 OpenAI 标准)，只有显式为 true 才开启流
     const isWebUI = body.is_web_ui === true;
 
+    // // 1. 转换消息格式 (OpenAI -> StockAI)
+    // // StockAI 格式: { parts: [{type: "text", text: "..."}], role: "user", id: "..." }
+    // const convertedMessages = messages.map(msg => ({
+    //   parts: [{ type: "text", text: msg.content }],
+    //   id: generateRandomId(16),
+    //   role: msg.role
+    // }));
+
     // 1. 转换消息格式 (OpenAI -> StockAI)
-    // StockAI 格式: { parts: [{type: "text", text: "..."}], role: "user", id: "..." }
-    const convertedMessages = messages.map(msg => ({
-      parts: [{ type: "text", text: msg.content }],
-      id: generateRandomId(16),
-      role: msg.role
-    }));
+    const convertedMessages = messages.map(msg => {
+      let contentStr = "";
+      
+      // 检测 content 是字符串还是数组
+      if (typeof msg.content === 'string') {
+        contentStr = msg.content;
+      } else if (Array.isArray(msg.content)) {
+        // 如果是数组，提取所有 type="text" 的内容并拼接
+        contentStr = msg.content
+          .filter(part => part.type === 'text')
+          .map(part => part.text)
+          .join('\n');
+      }
+
+      return {
+        parts: [{ type: "text", text: contentStr }],
+        id: generateRandomId(16),
+        role: msg.role
+      };
+    });
 
     // 2. 构造上游 Payload
     const payload = {
@@ -171,6 +194,7 @@ async function handleChatCompletions(request, requestId) {
 }
 
 // 处理流式响应 (SSE -> SSE)
+// [修复版] 移除缓冲区，恢复极速流式响应，避免超时或卡顿
 function handleStreamResponse(upstreamResponse, model, requestId, isWebUI) {
   const { readable, writable } = new TransformStream();
   const writer = writable.getWriter();
@@ -178,6 +202,22 @@ function handleStreamResponse(upstreamResponse, model, requestId, isWebUI) {
   const decoder = new TextDecoder();
 
   (async () => {
+    // 辅助函数：发送 SSE 数据块
+    const sendChunk = async (content, finishReason = null) => {
+      const chunk = {
+        id: requestId,
+        object: "chat.completion.chunk",
+        created: Math.floor(Date.now() / 1000),
+        model: model,
+        choices: [{ 
+            index: 0, 
+            delta: content ? { content: content } : {}, 
+            finish_reason: finishReason 
+        }]
+      };
+      await writer.write(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
+    };
+
     try {
       const reader = upstreamResponse.body.getReader();
       let buffer = "";
@@ -198,20 +238,13 @@ function handleStreamResponse(upstreamResponse, model, requestId, isWebUI) {
             try {
               const data = JSON.parse(dataStr);
               
-              // StockAI 的 delta 在 data.delta 中，且类型为 text-delta
-              if (data.type === 'text-delta' && data.delta) {
-                const chunk = {
-                  id: requestId,
-                  object: "chat.completion.chunk",
-                  created: Math.floor(Date.now() / 1000),
-                  model: model,
-                  choices: [{ index: 0, delta: { content: data.delta }, finish_reason: null }]
-                };
-                await writer.write(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
-              }
-              // 处理结束
-              else if (data.type === 'finish') {
-                 // Do nothing, wait for loop end or explicit stop
+              // 核心逻辑：收到什么发什么，不积压，确保速度
+              if (data.type === 'text-delta' && typeof data.delta === 'string') {
+                // 简单的过滤尝试：如果单个碎片完全就是广告开头，则屏蔽（几率较小，但无副作用）
+                if (data.delta.includes("本服务由 [web.stockai.trade]")) {
+                    continue; 
+                }
+                await sendChunk(data.delta);
               }
             } catch (e) { }
           }
@@ -219,32 +252,23 @@ function handleStreamResponse(upstreamResponse, model, requestId, isWebUI) {
       }
 
       // 发送结束标记
-      const endChunk = {
-        id: requestId,
-        object: "chat.completion.chunk",
-        created: Math.floor(Date.now() / 1000),
-        model: model,
-        choices: [{ index: 0, delta: {}, finish_reason: "stop" }]
-      };
-      await writer.write(encoder.encode(`data: ${JSON.stringify(endChunk)}\n\n`));
+      await sendChunk(null, "stop");
       await writer.write(encoder.encode('data: [DONE]\n\n'));
 
     } catch (e) {
-      const errChunk = {
-        id: requestId,
-        object: "chat.completion.chunk",
-        created: Math.floor(Date.now() / 1000),
-        model: model,
-        choices: [{ index: 0, delta: { content: `\n\n[Error: ${e.message}]` }, finish_reason: "error" }]
-      };
-      await writer.write(encoder.encode(`data: ${JSON.stringify(errChunk)}\n\n`));
+      // 发生错误时通知客户端
+      await sendChunk(`\n\n[System Error: ${e.message}]`, "error");
     } finally {
       await writer.close();
     }
   })();
 
   return new Response(readable, {
-    headers: corsHeaders({ 'Content-Type': 'text/event-stream' })
+    headers: corsHeaders({ 
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive'
+    })
   });
 }
 
@@ -282,6 +306,11 @@ async function handleNonStreamResponse(upstreamResponse, model, requestId) {
     throw new Error(`Stream buffering failed: ${e.message}`);
   }
 
+  // --- [新增代码] 去除广告 ---
+  // 正则匹配：匹配以换行符开头，包含 "本服务由 [web.stockai.trade]" 的内容直到结尾
+  fullText = fullText.replace(/\n+本服务由 \[web\.stockai\.trade\].*$/s, "");
+  // -------------------------
+  
   const response = {
     id: requestId,
     object: "chat.completion",
